@@ -1,10 +1,15 @@
 [project]
-name = "moku"
+name = "moku-workspace"
 version = "0.1.0"
-description = "Sentence retrieval experiments for dynamic spaced-repetition language learning."
+description = "Backend and research workspace for dynamic spaced-repetition language learning."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "pyinstrument>=5.1.2",
+]
+
+[project.optional-dependencies]
+notebooks = [
     "datasets>=3.0.0",
     "ipykernel>=6.29.0",
     "ipywidgets>=8.1.0",
@@ -18,11 +23,44 @@ dependencies = [
     "tqdm>=4.66.0",
 ]
 
+[dependency-groups]
+dev = [
+    "httpx>=0.28.0",
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.14.0",
+]
+
 [tool.uv]
 package = false
 
-[tool.ruff]
-line-length = 100
+[tool.uv.workspace]
+members = [
+    "apps/backend",
+    "packages/moku-core",
+]
+
+[tool.uv.sources]
+moku-backend = { workspace = true }
+moku-core = { workspace = true }
 
 [tool.uv.extra-build-dependencies]
 pkuseg = ["numpy"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+markers = [
+    "integration: tests that need external services such as PostgreSQL",
+]
+pythonpath = [
+    "apps/backend/src",
+    "packages/moku-core/src",
+]

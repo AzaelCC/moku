@@ -1,0 +1,20 @@
+[project]
+name = "moku-core"
+version = "0.1.0"
+description = "Core text, corpus, indexing, and retrieval logic for Moku."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+corpus-hf = [
+    "datasets>=3.0.0",
+    "pyarrow>=17.0.0",
+]
+zh = [
+    "numpy>=2.0.0",
+    "pkuseg>=0.0.25",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
