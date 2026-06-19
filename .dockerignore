@@ -1,0 +1,12 @@
+.git/
+.venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+.env
+data/
+outputs/
