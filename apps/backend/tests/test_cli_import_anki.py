@@ -6,6 +6,10 @@ from moku_backend.services.anki_import_service import (
     AnkiImportResult,
     SkippedAnkiCard,
 )
+from moku_backend.services.anki_package_import_service import (
+    AnkiPackageImportError,
+    AnkiPackageImportResult,
+)
 from typer.testing import CliRunner
 
 
@@ -79,3 +83,84 @@ def test_import_anki_cli_requires_deck_and_word_field() -> None:
 
     assert result.exit_code != 0
     assert "word-field" in result.output
+
+
+def test_import_anki_package_cli_prints_summary(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_import_anki_package(**kwargs: object) -> AnkiPackageImportResult:
+        seen.update(kwargs)
+        return AnkiPackageImportResult(
+            learner_public_id="learner-id",
+            learner_handle="default",
+            package_path="deck.apkg",
+            deck="Chinese 101::Chinese vocab",
+            language="zh-CN",
+            found_card_count=5,
+            imported_card_count=3,
+            imported_review_log_count=12,
+            fsrs_card_count=2,
+            scheduled_count=1,
+            unscheduled_count=1,
+            suspended_count=1,
+            skipped_missing_field_count=1,
+            skipped_empty_field_count=0,
+            skipped_too_long_count=0,
+            duplicate_card_count=1,
+            skipped_samples=(SkippedAnkiCard(42, "missing_field"),),
+        )
+
+    monkeypatch.setattr(cli_app, "_import_anki_package", fake_import_anki_package)
+
+    result = CliRunner().invoke(
+        cli_app.app,
+        [
+            "import-anki-package",
+            "--package-path",
+            "deck.apkg",
+            "--deck",
+            "Chinese 101::Chinese vocab",
+            "--word-field",
+            "Chinese",
+            "--language",
+            "zh-CN",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {
+        "package_path": "deck.apkg",
+        "deck": "Chinese 101::Chinese vocab",
+        "word_field": "Chinese",
+        "language": "zh-CN",
+        "learner_handle": None,
+    }
+    assert "Imported 3 learner cards from Anki package deck Chinese 101::Chinese vocab" in (
+        result.output
+    )
+    assert "review_logs=12" in result.output
+    assert "fsrs_cards=2" in result.output
+    assert "Skipped sample cards: 42:missing_field" in result.output
+
+
+def test_import_anki_package_cli_reports_import_errors(monkeypatch) -> None:
+    async def fake_import_anki_package(**_kwargs: object) -> AnkiPackageImportResult:
+        raise AnkiPackageImportError("Anki package not found: missing.apkg")
+
+    monkeypatch.setattr(cli_app, "_import_anki_package", fake_import_anki_package)
+
+    result = CliRunner().invoke(
+        cli_app.app,
+        [
+            "import-anki-package",
+            "--package-path",
+            "missing.apkg",
+            "--deck",
+            "Deck",
+            "--word-field",
+            "Expression",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Anki package not found" in result.output

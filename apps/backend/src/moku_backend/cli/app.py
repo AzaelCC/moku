@@ -12,6 +12,10 @@ from moku_backend.config import Settings
 from moku_backend.db.engine import create_engine, create_sessionmaker
 from moku_backend.services.anki_connect_client import AnkiConnectError
 from moku_backend.services.anki_import_service import AnkiImportError, AnkiImportService
+from moku_backend.services.anki_package_import_service import (
+    AnkiPackageImportError,
+    AnkiPackageImportService,
+)
 from moku_backend.services.corpus_import_service import CorpusImportService
 
 app = typer.Typer(no_args_is_help=True)
@@ -116,6 +120,55 @@ def import_anki(
         typer.echo(f"Skipped sample cards: {samples}")
 
 
+@app.command("import-anki-package")
+def import_anki_package(
+    package_path: Annotated[
+        str,
+        typer.Option(help="Path to an Anki .apkg or .colpkg export."),
+    ] = ...,
+    deck: Annotated[
+        str,
+        typer.Option(help="Anki deck name to import, including subdecks."),
+    ] = ...,
+    word_field: Annotated[
+        str,
+        typer.Option(help="Required Anki note field to import as the learner word."),
+    ] = ...,
+    language: Annotated[str | None, typer.Option(help="Moku language tag.")] = None,
+    learner_handle: Annotated[
+        str | None,
+        typer.Option(help="Moku learner handle to replace for this language."),
+    ] = None,
+) -> None:
+    try:
+        result = asyncio.run(
+            _import_anki_package(
+                package_path=package_path,
+                deck=deck,
+                word_field=word_field,
+                language=language,
+                learner_handle=learner_handle,
+            )
+        )
+    except AnkiPackageImportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo(
+        "Imported "
+        f"{result.imported_card_count} learner cards from Anki package deck {result.deck} "
+        f"for {result.learner_handle} ({result.language}; found={result.found_card_count}, "
+        f"scheduled={result.scheduled_count}, unscheduled={result.unscheduled_count}, "
+        f"suspended={result.suspended_count}, skipped={result.skipped_count}, "
+        f"duplicates={result.duplicate_card_count}, review_logs="
+        f"{result.imported_review_log_count}, fsrs_cards={result.fsrs_card_count})."
+    )
+    if result.skipped_samples:
+        samples = ", ".join(
+            f"{sample.card_id}:{sample.reason}" for sample in result.skipped_samples
+        )
+        typer.echo(f"Skipped sample cards: {samples}")
+
+
 async def _import_corpus(
     *,
     source: str,
@@ -161,6 +214,31 @@ async def _import_anki(
         async with sessionmaker() as session:
             service = AnkiImportService(session, settings)
             return await service.import_deck(
+                deck=deck,
+                word_field=word_field,
+                language=language,
+                learner_handle=learner_handle,
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _import_anki_package(
+    *,
+    package_path: str,
+    deck: str,
+    word_field: str,
+    language: str | None,
+    learner_handle: str | None,
+):
+    settings = Settings()
+    engine = create_engine(settings)
+    sessionmaker = create_sessionmaker(engine)
+    try:
+        async with sessionmaker() as session:
+            service = AnkiPackageImportService(session, settings)
+            return await service.import_package(
+                package_path=package_path,
                 deck=deck,
                 word_field=word_field,
                 language=language,
