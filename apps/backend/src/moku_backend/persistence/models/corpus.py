@@ -6,7 +6,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy import Uuid as SqlUuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,7 +45,14 @@ class Corpus(Base):
 
 class Sentence(Base):
     __tablename__ = "sentences"
-    __table_args__ = (UniqueConstraint("text", name="uq_sentences_text"),)
+    __table_args__ = (
+        UniqueConstraint("text", name="uq_sentences_text"),
+        Index(
+            "ix_sentences_corpus_id_max_content_word_rank",
+            "corpus_id",
+            "max_content_word_rank",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[uuid.UUID] = mapped_column(
@@ -47,6 +64,7 @@ class Sentence(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     tokens: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     content_tokens: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    max_content_word_rank: Mapped[int] = mapped_column(Integer, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
     source_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

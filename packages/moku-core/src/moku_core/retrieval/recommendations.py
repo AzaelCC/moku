@@ -88,15 +88,31 @@ def filter_documents_by_top_k_allowed_words(
     if top_k_allowed_words <= 0:
         return list(documents)
 
-    counts: Counter[str] = Counter()
-    for document in documents:
-        counts.update(document.content_tokens)
-
+    word_ranks = corpus_word_ranks_from_token_lists(
+        document.content_tokens for document in documents
+    )
     allowed_words = {
-        word for word, _count in counts.most_common(top_k_allowed_words)
+        word for word, rank in word_ranks.items() if rank <= top_k_allowed_words
     }
     return [
         document
         for document in documents
         if set(document.content_tokens).issubset(allowed_words)
     ]
+
+
+def corpus_word_ranks_from_token_lists(
+    token_lists: Iterable[Sequence[str]],
+) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for tokens in token_lists:
+        counts.update(tokens)
+
+    return {word: rank for rank, (word, _count) in enumerate(counts.most_common(), start=1)}
+
+
+def max_content_word_rank(
+    content_tokens: Sequence[str],
+    word_ranks: dict[str, int],
+) -> int:
+    return max((word_ranks[word] for word in set(content_tokens)), default=0)

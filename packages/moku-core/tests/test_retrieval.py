@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from moku_core.indexing import BM25Document, build_bm25_index, weighted_bm25_scores
 from moku_core.retrieval import ScheduleItem, retrieve_recommendations, scheduling_word_penalty
-from moku_core.retrieval.recommendations import filter_documents_by_top_k_allowed_words
+from moku_core.retrieval.recommendations import (
+    corpus_word_ranks_from_token_lists,
+    filter_documents_by_top_k_allowed_words,
+    max_content_word_rank,
+)
 from moku_core.retrieval.scoring import due_query_terms
 
 
@@ -54,6 +58,37 @@ def test_filter_documents_by_top_k_allowed_words_keeps_simple_vocabulary() -> No
     filtered = filter_documents_by_top_k_allowed_words(documents, top_k_allowed_words=2)
 
     assert [document.identifier for document in filtered] == ["1", "3"]
+
+
+def test_max_content_word_rank_matches_top_k_filtering() -> None:
+    documents = [
+        BM25Document("1", "Common phrase.", ("common", "phrase")),
+        BM25Document("2", "Common rare.", ("common", "rare")),
+        BM25Document("3", "Common common.", ("common", "common")),
+        BM25Document("4", "No content tokens.", ()),
+    ]
+
+    word_ranks = corpus_word_ranks_from_token_lists(
+        document.content_tokens for document in documents
+    )
+    max_ranks = {
+        document.identifier: max_content_word_rank(document.content_tokens, word_ranks)
+        for document in documents
+    }
+    threshold_filtered = [
+        document.identifier
+        for document in documents
+        if max_ranks[document.identifier] <= 2
+    ]
+    in_memory_filtered = filter_documents_by_top_k_allowed_words(
+        documents, top_k_allowed_words=2
+    )
+
+    assert word_ranks == {"common": 1, "phrase": 2, "rare": 3}
+    assert max_ranks == {"1": 2, "2": 3, "3": 1, "4": 0}
+    assert threshold_filtered == [
+        document.identifier for document in in_memory_filtered
+    ]
 
 
 def test_recommendations_apply_top_k_allowed_words_before_bm25() -> None:

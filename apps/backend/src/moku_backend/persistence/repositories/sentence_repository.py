@@ -7,6 +7,7 @@ from uuid import UUID
 
 from moku_core.corpus import CorpusSentence
 from moku_core.indexing import BM25Document
+from moku_core.retrieval import recommendations as recommendation_helpers
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +60,9 @@ class SentenceRepository:
         new_sentences = [
             sentence for sentence in unique_sentences if sentence.text not in existing_texts
         ]
+        word_ranks = recommendation_helpers.corpus_word_ranks_from_token_lists(
+            sentence.content_tokens for sentence in new_sentences
+        )
         self.session.add_all(
             [
                 Sentence(
@@ -68,6 +72,9 @@ class SentenceRepository:
                     text=sentence.text,
                     tokens=list(sentence.tokens),
                     content_tokens=list(sentence.content_tokens),
+                    max_content_word_rank=recommendation_helpers.max_content_word_rank(
+                        sentence.content_tokens, word_ranks
+                    ),
                     token_count=sentence.token_count,
                     source_metadata=sentence.source_metadata,
                 )
@@ -100,17 +107,28 @@ class SentenceRepository:
             deduplicated.append(sentence)
         return deduplicated
 
-    async def list_documents(self, corpus: Corpus, limit: int | None = None) -> list[BM25Document]:
-        statement = select(Sentence).where(Sentence.corpus_id == corpus.id).order_by(Sentence.id)
+    async def list_documents(
+        self,
+        corpus: Corpus,
+        limit: int | None = None,
+        top_k_allowed_words: int = 0,
+    ) -> list[BM25Document]:
+        statement = (
+            select(Sentence.public_id, Sentence.text, Sentence.content_tokens)
+            .where(Sentence.corpus_id == corpus.id)
+            .order_by(Sentence.id)
+        )
+        if top_k_allowed_words > 0:
+            statement = statement.where(Sentence.max_content_word_rank <= top_k_allowed_words)
         if limit is not None:
             statement = statement.limit(limit)
         result = await self.session.execute(statement)
-        sentences = result.scalars().all()
+
         return [
             BM25Document(
-                identifier=str(sentence.public_id),
-                text=sentence.text,
-                content_tokens=tuple(sentence.content_tokens),
+                identifier=str(public_id),
+                text=text,
+                content_tokens=tuple(content_tokens),
             )
-            for sentence in sentences
+            for public_id, text, content_tokens in result.all()
         ]

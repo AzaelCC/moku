@@ -67,7 +67,8 @@ def test_recommendations_api_preserves_explicit_top_k_allowed_words_zero(monkeyp
 async def test_recommendation_service_does_not_read_top_k_allowed_words_from_settings(
     monkeypatch,
 ) -> None:
-    seen: list[int] = []
+    document_filters_seen: list[int] = []
+    retrieval_filters_seen: list[int] = []
     corpus = SimpleNamespace(language="en")
     learner = SimpleNamespace()
 
@@ -83,7 +84,13 @@ async def test_recommendation_service_does_not_read_top_k_allowed_words_from_set
         async def get_corpus_by_name(self, corpus_name: str):
             return corpus
 
-        async def list_documents(self, resolved_corpus: object) -> list[object]:
+        async def list_documents(
+            self,
+            resolved_corpus: object,
+            *,
+            top_k_allowed_words: int = 0,
+        ) -> list[object]:
+            document_filters_seen.append(top_k_allowed_words)
             return []
 
     class FakeLearners:
@@ -94,7 +101,7 @@ async def test_recommendation_service_does_not_read_top_k_allowed_words_from_set
             return []
 
     def fake_retrieve_recommendations(**kwargs: object) -> list[object]:
-        seen.append(kwargs["top_k_allowed_words"])
+        retrieval_filters_seen.append(kwargs["top_k_allowed_words"])
         return []
 
     monkeypatch.setattr(
@@ -110,4 +117,5 @@ async def test_recommendation_service_does_not_read_top_k_allowed_words_from_set
     await service.recommend(corpus_name="sample-en")
     await service.recommend(corpus_name="sample-en", top_k_allowed_words=0)
 
-    assert seen == [5_000, 0]
+    assert document_filters_seen == [5_000, 0]
+    assert retrieval_filters_seen == [0, 0]
