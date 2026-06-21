@@ -39,8 +39,10 @@ The `migrate` service runs Alembic and creates the database tables. The import
 command expects those tables to exist.
 
 Set `MOKU_POSTGRES_PORT` or `MOKU_BACKEND_PORT` in `.env` to expose services on
-different host ports. If you run the backend outside Docker Compose, update
-`MOKU_DATABASE_URL` to use the same Postgres host port.
+different host ports. For host-run backend commands, `MOKU_DATABASE_URL` can use
+`${MOKU_POSTGRES_PORT}` so it stays in sync. Docker Compose injects
+`.env.docker` into backend containers so they use the internal Postgres service
+address instead.
 
 Run the API:
 

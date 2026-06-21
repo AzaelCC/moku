@@ -4,8 +4,9 @@ services:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
+    env_file:
+      - .env.docker
     environment:
-      MOKU_DATABASE_URL: postgresql+asyncpg://moku:moku@postgres:5432/moku
       HF_TOKEN: ${HF_TOKEN:-}
     ports:
       - "${MOKU_BACKEND_PORT:-8000}:8000"
@@ -20,8 +21,8 @@ services:
       dockerfile: apps/backend/Dockerfile
     working_dir: /app/apps/backend
     command: ["alembic", "upgrade", "head"]
-    environment:
-      MOKU_DATABASE_URL: postgresql+asyncpg://moku:moku@postgres:5432/moku
+    env_file:
+      - .env.docker
     depends_on:
       postgres:
         condition: service_healthy
