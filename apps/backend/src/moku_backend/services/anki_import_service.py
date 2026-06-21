@@ -162,9 +162,7 @@ class AnkiImportService:
             found_card_count=len(cards),
             imported_card_count=len(card_specs),
             scheduled_count=sum(1 for card in card_specs if card.schedule_status == SCHEDULED),
-            unscheduled_count=sum(
-                1 for card in card_specs if card.schedule_status == UNSCHEDULED
-            ),
+            unscheduled_count=sum(1 for card in card_specs if card.schedule_status == UNSCHEDULED),
             suspended_count=sum(1 for card in card_specs if card.schedule_status == SUSPENDED),
             skipped_missing_field_count=sum(
                 1 for card in skipped if card.reason == "missing_field"
@@ -187,8 +185,7 @@ class AnkiImportService:
         suspended_by_card = self.client.are_suspended(card_ids)
         due_by_card = self.client.are_due(card_ids)
         cards_by_id = {
-            _required_int(raw_card.get("cardId"), "cardId"): raw_card
-            for raw_card in raw_cards
+            _required_int(raw_card.get("cardId"), "cardId"): raw_card for raw_card in raw_cards
         }
         missing_cards = [card_id for card_id in card_ids if card_id not in cards_by_id]
         if missing_cards:
@@ -261,6 +258,7 @@ class AnkiImportService:
                 schedule_status=card.schedule_status,
                 days_until_due=card.days_until_due,
                 interval_days=card.interval_days,
+                scheduling_algorithm="anki",
                 metadata={
                     "source": "anki",
                     "deck": deck,

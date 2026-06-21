@@ -130,6 +130,8 @@ def test_build_card_specs_normalizes_skips_and_deduplicates_cards() -> None:
 
     casa = specs_by_word["casa grande"]
     assert casa.schedule_status == "scheduled"
+    assert casa.scheduling_algorithm == "anki"
+    assert casa.fsrs_card is None
     assert casa.days_until_due == 0
     assert casa.interval_days == 7
     assert casa.metadata["card_ids"] == [1, 2]

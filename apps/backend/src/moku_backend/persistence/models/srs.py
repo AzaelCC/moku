@@ -50,9 +50,9 @@ class LearnerCard(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
     interval_days: Mapped[int | None] = mapped_column(Integer)
-    schedule_status: Mapped[str] = mapped_column(
-        String(32), default="scheduled", nullable=False
-    )
+    schedule_status: Mapped[str] = mapped_column(String(32), default="scheduled", nullable=False)
+    scheduling_algorithm: Mapped[str] = mapped_column(String(32), default="legacy", nullable=False)
+    fsrs_card: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     source_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
