@@ -11,6 +11,7 @@ from moku_core.corpus.types import CorpusSource
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from moku_backend.config import Settings
+from moku_backend.persistence.repositories.bm25_index_repository import BM25IndexRepository
 from moku_backend.persistence.repositories.import_repository import ImportRunRepository
 from moku_backend.persistence.repositories.learner_repository import LearnerRepository
 from moku_backend.persistence.repositories.sentence_repository import SentenceRepository
@@ -29,6 +30,7 @@ class CorpusImportService:
     def __init__(self, session: AsyncSession, settings: Settings) -> None:
         self.session = session
         self.settings = settings
+        self.bm25_indexes = BM25IndexRepository(session)
         self.import_runs = ImportRunRepository(session)
         self.learners = LearnerRepository(session)
         self.sentences = SentenceRepository(session)
@@ -89,6 +91,7 @@ class CorpusImportService:
             persisted_records = await self.sentences.replace_sentences(
                 corpus=corpus, sentences=records
             )
+            await self.bm25_indexes.rebuild_all_presets(corpus)
 
             seeded_cards = 0
             if should_seed:

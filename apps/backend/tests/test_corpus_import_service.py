@@ -39,6 +39,14 @@ class FakeSentences:
         return list(sentences)
 
 
+class FakeBM25Indexes:
+    def __init__(self) -> None:
+        self.rebuilt_corpora: list[object] = []
+
+    async def rebuild_all_presets(self, corpus: object) -> None:
+        self.rebuilt_corpora.append(corpus)
+
+
 async def test_corpus_import_service_defaults_to_unbounded_limits(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
@@ -53,6 +61,8 @@ async def test_corpus_import_service_defaults_to_unbounded_limits(monkeypatch) -
     settings = Settings(_env_file=None, database_url="postgresql+asyncpg://unused/unused")
     service = CorpusImportService(FakeSession(), settings)
     import_runs = FakeImportRuns()
+    bm25_indexes = FakeBM25Indexes()
+    service.bm25_indexes = bm25_indexes
     service.import_runs = import_runs
     service.sentences = FakeSentences()
 
@@ -70,4 +80,5 @@ async def test_corpus_import_service_defaults_to_unbounded_limits(monkeypatch) -
     assert seen["config"].max_documents is None
     assert seen["config"].max_sentences is None
     assert import_runs.succeeded == (1, 0)
+    assert len(bm25_indexes.rebuilt_corpora) == 1
     assert result.sentence_count == 0

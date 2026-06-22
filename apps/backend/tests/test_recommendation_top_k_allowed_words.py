@@ -11,6 +11,7 @@ from moku_backend.api.v1 import recommendations as recommendations_api
 from moku_backend.config import Settings
 from moku_backend.services import recommendation_service
 from moku_backend.services.recommendation_service import RecommendationService
+from moku_core.retrieval import ScheduleItem
 
 
 async def fake_get_session() -> AsyncIterator[object]:
@@ -68,7 +69,8 @@ async def test_recommendation_service_does_not_read_top_k_allowed_words_from_set
     monkeypatch,
 ) -> None:
     document_filters_seen: list[int] = []
-    retrieval_filters_seen: list[int] = []
+    persisted_filters_seen: list[int] = []
+    fallback_filters_seen: list[int] = []
     corpus = SimpleNamespace(language="en")
     learner = SimpleNamespace()
 
@@ -98,10 +100,15 @@ async def test_recommendation_service_does_not_read_top_k_allowed_words_from_set
             return learner
 
         async def list_schedule(self, learner: object, language: str) -> list[object]:
+            return [ScheduleItem("archive", 0, 7)]
+
+    class FakeBM25Indexes:
+        async def rank_preset_candidates(self, **kwargs: object) -> list[object]:
+            persisted_filters_seen.append(kwargs["top_k_allowed_words"])
             return []
 
     def fake_retrieve_recommendations(**kwargs: object) -> list[object]:
-        retrieval_filters_seen.append(kwargs["top_k_allowed_words"])
+        fallback_filters_seen.append(kwargs["top_k_allowed_words"])
         return []
 
     monkeypatch.setattr(
@@ -111,11 +118,50 @@ async def test_recommendation_service_does_not_read_top_k_allowed_words_from_set
     )
 
     service = RecommendationService(session=object(), settings=SettingsWithoutTopK())
+    service.bm25_indexes = FakeBM25Indexes()
     service.sentences = FakeSentences()
     service.learners = FakeLearners()
 
     await service.recommend(corpus_name="sample-en")
+    await service.recommend(corpus_name="sample-en", top_k_allowed_words=123)
+
+    assert persisted_filters_seen == [5_000]
+    assert document_filters_seen == [123]
+    assert fallback_filters_seen == [0]
+
+
+async def test_recommendation_service_uses_persisted_path_for_top_k_zero() -> None:
+    corpus = SimpleNamespace(language="en")
+    learner = SimpleNamespace()
+    persisted_filters_seen: list[int] = []
+
+    class FakeSentences:
+        async def get_corpus_by_name(self, corpus_name: str):
+            return corpus
+
+        async def list_documents(self, *args: object, **kwargs: object) -> list[object]:
+            raise AssertionError("Preset top_k_allowed_words should use persisted BM25.")
+
+    class FakeLearners:
+        async def get_or_create_default(self, handle: str):
+            return learner
+
+        async def list_schedule(self, learner: object, language: str) -> list[object]:
+            return [ScheduleItem("archive", 0, 7)]
+
+    class FakeBM25Indexes:
+        async def rank_preset_candidates(self, **kwargs: object) -> list[object]:
+            persisted_filters_seen.append(kwargs["top_k_allowed_words"])
+            return []
+
+    service = RecommendationService(
+        session=object(),
+        settings=Settings(_env_file=None, database_url="postgresql+asyncpg://unused/unused"),
+    )
+    service.bm25_indexes = FakeBM25Indexes()
+    service.sentences = FakeSentences()
+    service.learners = FakeLearners()
+
     await service.recommend(corpus_name="sample-en", top_k_allowed_words=0)
 
-    assert document_filters_seen == [5_000, 0]
-    assert retrieval_filters_seen == [0, 0]
+    assert persisted_filters_seen == [0]

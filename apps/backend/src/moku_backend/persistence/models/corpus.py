@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -72,6 +73,113 @@ class Sentence(Base):
     )
 
     corpus: Mapped[Corpus] = relationship(back_populates="sentences")
+
+
+class BM25CorpusDocument(Base):
+    __tablename__ = "bm25_corpus_documents"
+    __table_args__ = (
+        UniqueConstraint("sentence_id", name="uq_bm25_corpus_documents_sentence_id"),
+        Index("ix_bm25_corpus_documents_corpus_id", "corpus_id"),
+        Index(
+            "ix_bm25_corpus_documents_sentence_id_cover",
+            "sentence_id",
+            postgresql_include=["document_length"],
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corpus_id: Mapped[int] = mapped_column(ForeignKey("corpora.id", ondelete="CASCADE"))
+    sentence_id: Mapped[int] = mapped_column(ForeignKey("sentences.id", ondelete="CASCADE"))
+    document_length: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class BM25CorpusTerm(Base):
+    __tablename__ = "bm25_corpus_terms"
+    __table_args__ = (
+        UniqueConstraint("sentence_id", "term", name="uq_bm25_corpus_terms_sentence_term"),
+        Index(
+            "ix_bm25_corpus_terms_corpus_id_term",
+            "corpus_id",
+            "term",
+            "sentence_id",
+            postgresql_include=["term_frequency"],
+        ),
+        Index("ix_bm25_corpus_terms_sentence_id", "sentence_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corpus_id: Mapped[int] = mapped_column(ForeignKey("corpora.id", ondelete="CASCADE"))
+    sentence_id: Mapped[int] = mapped_column(ForeignKey("sentences.id", ondelete="CASCADE"))
+    term: Mapped[str] = mapped_column(String(255), nullable=False)
+    term_frequency: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class BM25IndexLevel(Base):
+    __tablename__ = "bm25_index_levels"
+    __table_args__ = (
+        UniqueConstraint(
+            "corpus_id",
+            "top_k_allowed_words",
+            "algorithm_version",
+            name="uq_bm25_index_levels_corpus_top_k_algorithm",
+        ),
+        Index("ix_bm25_index_levels_corpus_id_top_k", "corpus_id", "top_k_allowed_words"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    corpus_id: Mapped[int] = mapped_column(ForeignKey("corpora.id", ondelete="CASCADE"))
+    top_k_allowed_words: Mapped[int] = mapped_column(Integer, nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    document_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    average_document_length: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class BM25IndexTerm(Base):
+    __tablename__ = "bm25_index_terms"
+    __table_args__ = (
+        UniqueConstraint("index_level_id", "term", name="uq_bm25_index_terms_level_term"),
+        Index(
+            "ix_bm25_index_terms_level_term",
+            "index_level_id",
+            "term",
+            postgresql_include=["idf"],
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    index_level_id: Mapped[int] = mapped_column(
+        ForeignKey("bm25_index_levels.id", ondelete="CASCADE")
+    )
+    term: Mapped[str] = mapped_column(String(255), nullable=False)
+    document_frequency: Mapped[int] = mapped_column(Integer, nullable=False)
+    idf: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class BM25IndexPosting(Base):
+    __tablename__ = "bm25_index_postings"
+    __table_args__ = (
+        Index(
+            "ix_bm25_index_postings_level_term_sentence",
+            "index_level_id",
+            "term",
+            "sentence_id",
+            unique=True,
+            postgresql_include=["term_frequency", "document_length", "idf"],
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    index_level_id: Mapped[int] = mapped_column(
+        ForeignKey("bm25_index_levels.id", ondelete="CASCADE")
+    )
+    sentence_id: Mapped[int] = mapped_column(ForeignKey("sentences.id", ondelete="CASCADE"))
+    term: Mapped[str] = mapped_column(String(255), nullable=False)
+    term_frequency: Mapped[int] = mapped_column(Integer, nullable=False)
+    document_length: Mapped[float] = mapped_column(Float, nullable=False)
+    idf: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class ImportRun(Base):

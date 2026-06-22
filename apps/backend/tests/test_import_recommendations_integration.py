@@ -22,7 +22,12 @@ def test_sample_import_to_recommendations_vertical_path(monkeypatch) -> None:
     from moku_backend.config import Settings
     from moku_backend.db.engine import create_engine, create_sessionmaker
     from moku_backend.main import create_app
+    from moku_backend.persistence.models import BM25IndexLevel
+    from moku_backend.persistence.repositories.bm25_index_repository import (
+        BM25_PRESET_TOP_K_ALLOWED_WORDS,
+    )
     from moku_backend.services.corpus_import_service import CorpusImportService
+    from sqlalchemy import select
 
     backend_root = Path(__file__).resolve().parents[1]
     monkeypatch.setenv("MOKU_DATABASE_URL", database_url)
@@ -50,12 +55,20 @@ def test_sample_import_to_recommendations_vertical_path(monkeypatch) -> None:
                     max_sentences=20,
                     seed_default_learner=True,
                 )
+                result = await session.execute(
+                    select(BM25IndexLevel.top_k_allowed_words).order_by(
+                        BM25IndexLevel.top_k_allowed_words
+                    )
+                )
+                index_levels.extend(result.scalars().all())
         finally:
             await engine.dispose()
 
     import anyio
 
+    index_levels: list[int] = []
     anyio.run(import_sample)
+    assert set(index_levels) == set(BM25_PRESET_TOP_K_ALLOWED_WORDS)
 
     client = TestClient(create_app(settings))
     response = client.get("/v1/recommendations", params={"top_k": 3})
