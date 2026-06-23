@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from fsrs import Card as FsrsCard
 from moku_backend.config import Settings
-from moku_backend.persistence.models import Learner, LearnerCard
+from moku_backend.persistence.models import Learner, LearnerCard, LearnerNote
 from moku_backend.services.learner_card_service import (
     FSRS_ALGORITHM,
     LearnerCardConflictError,
@@ -42,9 +42,15 @@ class FakeSession:
 
 
 class FakeLearners:
-    def __init__(self, learner: Learner, card: LearnerCard | None = None) -> None:
+    def __init__(
+        self,
+        learner: Learner,
+        card: LearnerCard | None = None,
+        note: LearnerNote | None = None,
+    ) -> None:
         self.learner = learner
         self.card = card
+        self.note = note if note is not None else (card.note if card is not None else None)
         self.listed_cards: list[LearnerCard] = []
         self.seen_list_kwargs: dict[str, object] | None = None
 
@@ -56,8 +62,15 @@ class FakeLearners:
             return self.learner
         return None
 
-    async def get_card_by_word_language(self, **_kwargs):
-        return self.card
+    async def get_card_by_note_key_card_type(self, **kwargs):
+        if self.card is None:
+            return None
+        if kwargs["card_type"] == self.card.card_type:
+            return self.card
+        return None
+
+    async def get_note_by_key(self, **_kwargs):
+        return self.note
 
     async def get_card_by_public_id(self, public_id, *, load_learner: bool = False):
         if self.card is not None and public_id == self.card.public_id:
@@ -83,10 +96,12 @@ async def test_create_fsrs_card_initializes_fsrs_state() -> None:
     session = FakeSession()
     service = make_service(session, FakeLearners(learner))
 
-    card = await service.create_fsrs_card(word=" Casa ", language="EN")
+    card = await service.create_fsrs_card(word=" Casa ", card_type="Reading", language="EN")
 
-    assert card.word == "casa"
-    assert card.language == "en"
+    assert card.note.word == "casa"
+    assert card.note.language == "en"
+    assert card.note.note_key == "manual:casa"
+    assert card.card_type == "reading"
     assert card.scheduling_algorithm == FSRS_ALGORITHM
     assert card.schedule_status == "scheduled"
     assert card.interval_days == 1
@@ -98,10 +113,16 @@ async def test_create_fsrs_card_initializes_fsrs_state() -> None:
 
 async def test_create_fsrs_card_rejects_duplicate_word_language() -> None:
     learner = Learner(id=12, public_id=uuid4(), handle="default")
-    existing = LearnerCard(
+    note = LearnerNote(
         learner=learner,
         word="casa",
         language="en",
+        note_key="manual:casa",
+        source_metadata={},
+    )
+    existing = LearnerCard(
+        note=note,
+        card_type="reading",
         schedule_status="scheduled",
         scheduling_algorithm="fsrs",
         source_metadata={},
@@ -109,18 +130,50 @@ async def test_create_fsrs_card_rejects_duplicate_word_language() -> None:
     service = make_service(FakeSession(), FakeLearners(learner, existing))
 
     with pytest.raises(LearnerCardConflictError):
-        await service.create_fsrs_card(word="casa", language="en")
+        await service.create_fsrs_card(word="casa", card_type="reading", language="en")
+
+
+async def test_create_fsrs_card_allows_same_word_different_card_type() -> None:
+    learner = Learner(id=12, public_id=uuid4(), handle="default")
+    note = LearnerNote(
+        learner=learner,
+        word="casa",
+        language="en",
+        note_key="manual:casa",
+        source_metadata={},
+    )
+    existing = LearnerCard(
+        note=note,
+        card_type="reading",
+        schedule_status="scheduled",
+        scheduling_algorithm="fsrs",
+        source_metadata={},
+    )
+    session = FakeSession()
+    service = make_service(session, FakeLearners(learner, existing, note))
+
+    card = await service.create_fsrs_card(word="casa", card_type="listening", language="en")
+
+    assert card.note is note
+    assert card.card_type == "listening"
+    assert session.commit_count == 1
 
 
 async def test_review_card_persists_fsrs_update_and_review_log() -> None:
     reviewed_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     learner = Learner(id=12, public_id=uuid4(), handle="default")
-    card = LearnerCard(
-        id=55,
-        public_id=uuid4(),
+    note = LearnerNote(
         learner=learner,
         word="casa",
         language="en",
+        note_key="manual:casa",
+        source_metadata={},
+    )
+    card = LearnerCard(
+        id=55,
+        public_id=uuid4(),
+        note=note,
+        card_type="reading",
         due_at=reviewed_at,
         interval_days=1,
         schedule_status="scheduled",
@@ -151,12 +204,18 @@ async def test_review_card_persists_fsrs_update_and_review_log() -> None:
 
 async def test_review_card_rejects_non_fsrs_cards() -> None:
     learner = Learner(id=12, public_id=uuid4(), handle="default")
-    card = LearnerCard(
-        id=55,
-        public_id=uuid4(),
+    note = LearnerNote(
         learner=learner,
         word="casa",
         language="en",
+        note_key="manual:casa",
+        source_metadata={},
+    )
+    card = LearnerCard(
+        id=55,
+        public_id=uuid4(),
+        note=note,
+        card_type="reading",
         due_at=None,
         interval_days=None,
         schedule_status="scheduled",
@@ -172,12 +231,18 @@ async def test_review_card_rejects_non_fsrs_cards() -> None:
 
 async def test_review_card_requires_utc_review_datetime() -> None:
     learner = Learner(id=12, public_id=uuid4(), handle="default")
-    card = LearnerCard(
-        id=55,
-        public_id=uuid4(),
+    note = LearnerNote(
         learner=learner,
         word="casa",
         language="en",
+        note_key="manual:casa",
+        source_metadata={},
+    )
+    card = LearnerCard(
+        id=55,
+        public_id=uuid4(),
+        note=note,
+        card_type="reading",
         due_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         interval_days=1,
         schedule_status="scheduled",

@@ -37,9 +37,11 @@ class FsrsStateSummary(BaseModel):
 
 class LearnerCardResponse(BaseModel):
     public_id: UUID
+    note_id: UUID
     learner_id: UUID
     word: str
     language: str
+    card_type: str
     schedule_status: str
     scheduling_algorithm: str
     due_at: datetime | None
@@ -50,6 +52,7 @@ class LearnerCardResponse(BaseModel):
 
 class CreateLearnerCardRequest(BaseModel):
     word: str = Field(min_length=1, max_length=255)
+    card_type: str = Field(min_length=1, max_length=120)
     language: str | None = Field(default=None, min_length=1, max_length=32)
     learner_id: UUID | None = None
 
@@ -101,6 +104,7 @@ async def create_learner_card(
     try:
         card = await service.create_fsrs_card(
             word=request.word,
+            card_type=request.card_type,
             language=request.language,
             learner_public_id=request.learner_id,
         )
@@ -151,9 +155,11 @@ def _card_response(
 ) -> LearnerCardResponse:
     return LearnerCardResponse(
         public_id=card.public_id,
-        learner_id=card.learner.public_id,
-        word=card.word,
-        language=card.language,
+        note_id=card.note.public_id,
+        learner_id=card.note.learner.public_id,
+        word=card.note.word,
+        language=card.note.language,
+        card_type=card.card_type,
         schedule_status=card.schedule_status,
         scheduling_algorithm=card.scheduling_algorithm,
         due_at=card.due_at,

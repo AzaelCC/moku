@@ -1,10 +1,9 @@
 import asyncio
 
-from pyinstrument import Profiler
-
 from moku_backend.config import Settings
 from moku_backend.db.engine import create_engine, create_sessionmaker
 from moku_backend.services.recommendation_service import RecommendationService
+from pyinstrument import Profiler
 
 
 async def main():

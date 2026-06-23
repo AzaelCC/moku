@@ -42,6 +42,14 @@ class AnkiPackageField:
 
 
 @dataclass(frozen=True)
+class AnkiPackageTemplate:
+    notetype_id: int
+    notetype_name: str
+    ord: int
+    name: str
+
+
+@dataclass(frozen=True)
 class AnkiPackageNote:
     id: int
     guid: str
@@ -108,11 +116,18 @@ class AnkiPackage:
     notes: list[AnkiPackageNote]
     cards: list[AnkiPackageCard]
     review_logs: list[AnkiPackageReviewLog]
+    templates: list[AnkiPackageTemplate] = field(default_factory=list)
     notes_by_id: dict[int, AnkiPackageNote] = field(init=False)
+    templates_by_notetype_ord: dict[tuple[int, int], AnkiPackageTemplate] = field(init=False)
     review_logs_by_card_id: dict[int, list[AnkiPackageReviewLog]] = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "notes_by_id", {note.id: note for note in self.notes})
+        object.__setattr__(
+            self,
+            "templates_by_notetype_ord",
+            {(template.notetype_id, template.ord): template for template in self.templates},
+        )
         logs_by_card: dict[int, list[AnkiPackageReviewLog]] = {}
         for review_log in self.review_logs:
             logs_by_card.setdefault(review_log.card_id, []).append(review_log)
@@ -162,11 +177,23 @@ class AnkiPackageReader:
 
             created_at = _collection_created_at(connection)
             if {"decks", "notetypes", "fields"}.issubset(tables):
-                decks, fields, field_names_by_notetype, notetype_names = _read_modern_metadata(
+                (
+                    decks,
+                    fields,
+                    templates,
+                    field_names_by_notetype,
+                    notetype_names,
+                ) = _read_modern_metadata(
                     connection
                 )
             else:
-                decks, fields, field_names_by_notetype, notetype_names = _read_legacy_metadata(
+                (
+                    decks,
+                    fields,
+                    templates,
+                    field_names_by_notetype,
+                    notetype_names,
+                ) = _read_legacy_metadata(
                     connection
                 )
 
@@ -185,6 +212,7 @@ class AnkiPackageReader:
                 notes=notes,
                 cards=cards,
                 review_logs=review_logs,
+                templates=templates,
             )
         finally:
             connection.close()
@@ -235,6 +263,14 @@ def inspect_anki_package(package_path: str | Path) -> dict[str, object]:
             }
             for field in package.fields
         ],
+        "templates": [
+            {
+                "notetype": template.notetype_name,
+                "ord": template.ord,
+                "name": template.name,
+            }
+            for template in package.templates
+        ],
     }
 
 
@@ -280,6 +316,7 @@ def _read_modern_metadata(
 ) -> tuple[
     list[AnkiPackageDeck],
     list[AnkiPackageField],
+    list[AnkiPackageTemplate],
     dict[int, list[str]],
     dict[int, str],
 ]:
@@ -312,7 +349,9 @@ def _read_modern_metadata(
             )
         )
 
-    return decks, fields, field_names_by_notetype, notetype_names
+    templates = _read_modern_templates(connection, notetype_names)
+
+    return decks, fields, templates, field_names_by_notetype, notetype_names
 
 
 def _read_legacy_metadata(
@@ -320,6 +359,7 @@ def _read_legacy_metadata(
 ) -> tuple[
     list[AnkiPackageDeck],
     list[AnkiPackageField],
+    list[AnkiPackageTemplate],
     dict[int, list[str]],
     dict[int, str],
 ]:
@@ -341,6 +381,7 @@ def _read_legacy_metadata(
     ]
 
     fields: list[AnkiPackageField] = []
+    templates: list[AnkiPackageTemplate] = []
     field_names_by_notetype: dict[int, list[str]] = {}
     notetype_names: dict[int, str] = {}
     for model in raw_models.values():
@@ -368,8 +409,43 @@ def _read_legacy_metadata(
                 )
             )
         field_names_by_notetype[notetype_id] = field_names
+        for template in sorted(
+            model.get("tmpls", []),
+            key=lambda item: int(item.get("ord", 0)),
+        ):
+            if not isinstance(template, dict):
+                continue
+            templates.append(
+                AnkiPackageTemplate(
+                    notetype_id=notetype_id,
+                    notetype_name=notetype_name,
+                    ord=int(template.get("ord", 0)),
+                    name=str(template.get("name", "")),
+                )
+            )
 
-    return decks, fields, field_names_by_notetype, notetype_names
+    return decks, fields, templates, field_names_by_notetype, notetype_names
+
+
+def _read_modern_templates(
+    connection: sqlite3.Connection,
+    notetype_names: dict[int, str],
+) -> list[AnkiPackageTemplate]:
+    if "templates" not in _table_names(connection):
+        return []
+    try:
+        rows = connection.execute("select ntid, ord, name from templates order by ntid, ord")
+    except sqlite3.OperationalError:
+        return []
+    return [
+        AnkiPackageTemplate(
+            notetype_id=int(row["ntid"]),
+            notetype_name=notetype_names.get(int(row["ntid"]), str(row["ntid"])),
+            ord=int(row["ord"]),
+            name=str(row["name"]),
+        )
+        for row in rows
+    ]
 
 
 def _read_notes(

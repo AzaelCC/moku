@@ -38,6 +38,8 @@ class FakeAnkiClient:
                 "deckName": "Japanese::Core",
                 "modelName": "Basic",
                 "fields": {"Expression": {"value": "Casa"}},
+                "ord": 0,
+                "templateName": "Reading",
                 "interval": 7,
                 "due": 0,
                 "queue": 2,
@@ -90,7 +92,7 @@ def test_fetch_cards_fails_when_deck_is_missing() -> None:
         service._fetch_cards("Missing")
 
 
-def test_build_card_specs_normalizes_skips_and_deduplicates_cards() -> None:
+def test_build_note_specs_preserves_notes_and_card_types() -> None:
     service = AnkiImportService(
         FakeSession(),
         Settings(database_url="postgresql+asyncpg://unused/unused"),
@@ -115,33 +117,55 @@ def test_build_card_specs_normalizes_skips_and_deduplicates_cards() -> None:
         _card(card_id=4, note_id=104, value="<br>"),
         _card(card_id=5, note_id=105, value="Waiting Room", card_type=0, reps=0),
         _card(card_id=6, note_id=106, value="Paused", suspended=True),
+        _card(
+            card_id=7,
+            note_id=101,
+            value="<b>Casa&nbsp;Grande</b>",
+            ord_value=1,
+            template_name="Listening",
+        ),
+        _card(
+            card_id=8,
+            note_id=101,
+            value="<b>Casa&nbsp;Grande</b>",
+            ord_value=0,
+            template_name="Reading",
+        ),
     ]
 
-    specs, skipped, duplicate_count = service._build_card_specs(
+    specs, skipped, duplicate_count = service._build_note_specs(
         cards=cards,
         deck="Japanese",
         word_field="Expression",
     )
 
-    specs_by_word = {spec.word: spec for spec in specs}
-    assert set(specs_by_word) == {"casa grande", "waiting room", "paused"}
+    specs_by_key = {spec.note_key: spec for spec in specs}
+    assert set(specs_by_key) == {"anki:101", "anki:102", "anki:105", "anki:106"}
     assert duplicate_count == 1
     assert [skip.reason for skip in skipped] == ["missing_field", "empty_field"]
 
-    casa = specs_by_word["casa grande"]
-    assert casa.schedule_status == "scheduled"
-    assert casa.scheduling_algorithm == "anki"
-    assert casa.fsrs_card is None
-    assert casa.days_until_due == 0
-    assert casa.interval_days == 7
-    assert casa.metadata["card_ids"] == [1, 2]
-    assert casa.metadata["note_ids"] == [101, 102]
-    assert casa.metadata["cards"][0]["original_field_value"] == "Casa Grande"
+    casa = specs_by_key["anki:101"]
+    assert casa.word == "casa grande"
+    assert casa.metadata["note_id"] == 101
+    assert casa.metadata["original_field_value"] == "Casa Grande"
+    assert casa.metadata["fields"] == {"Expression": "Casa Grande"}
+    assert [card.card_type for card in casa.cards] == ["reading", "listening"]
+    assert casa.cards[0].schedule_status == "scheduled"
+    assert casa.cards[0].scheduling_algorithm == "anki"
+    assert casa.cards[0].fsrs_card is None
+    assert casa.cards[0].days_until_due == 0
+    assert casa.cards[0].interval_days == 7
+    assert casa.cards[0].metadata["card_id"] == 1
+    assert casa.cards[1].metadata["card_id"] == 7
 
-    assert specs_by_word["waiting room"].schedule_status == "unscheduled"
-    assert specs_by_word["waiting room"].days_until_due is None
-    assert specs_by_word["paused"].schedule_status == "suspended"
-    assert specs_by_word["paused"].interval_days is None
+    same_word_other_note = specs_by_key["anki:102"]
+    assert same_word_other_note.word == "casa grande"
+    assert same_word_other_note.cards[0].metadata["card_id"] == 2
+
+    assert specs_by_key["anki:105"].cards[0].schedule_status == "unscheduled"
+    assert specs_by_key["anki:105"].cards[0].days_until_due is None
+    assert specs_by_key["anki:106"].cards[0].schedule_status == "suspended"
+    assert specs_by_key["anki:106"].cards[0].interval_days is None
 
 
 def _card(
@@ -155,6 +179,8 @@ def _card(
     card_type: int = 2,
     reps: int = 3,
     suspended: bool = False,
+    ord_value: int | None = 0,
+    template_name: str | None = "Reading",
 ) -> AnkiCard:
     if fields is None:
         fields = {"Expression": {"value": value}}
@@ -164,6 +190,8 @@ def _card(
         deck_name="Japanese",
         model_name="Basic",
         fields=fields,
+        ord=ord_value,
+        template_name=template_name,
         interval=interval,
         due=0,
         queue=2,

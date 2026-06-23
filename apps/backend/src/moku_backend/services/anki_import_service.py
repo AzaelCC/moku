@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,11 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from moku_backend.config import Settings
 from moku_backend.persistence.repositories.learner_repository import (
     LearnerCardSpec,
+    LearnerNoteSpec,
     LearnerRepository,
 )
 from moku_backend.services.anki_connect_client import AnkiConnectClient
+from moku_backend.services.learner_card_identity import (
+    CARD_WORD_MAX_LENGTH,
+    anki_card_type,
+    anki_note_key,
+)
 
-CARD_WORD_MAX_LENGTH = 255
 SCHEDULED = "scheduled"
 UNSCHEDULED = "unscheduled"
 SUSPENDED = "suspended"
@@ -50,6 +55,8 @@ class AnkiCard:
     deck_name: str
     model_name: str
     fields: dict[str, Any]
+    ord: int | None
+    template_name: str | None
     interval: int
     due: int
     queue: int
@@ -64,19 +71,13 @@ class AnkiCard:
 @dataclass
 class ImportedAnkiCard:
     word: str
+    note_key: str
+    card_type: str
+    note_metadata: dict[str, object]
     schedule_status: str
     days_until_due: int | None
     interval_days: int | None
-    metadata: dict[str, object]
-
-
-@dataclass
-class AggregatedAnkiCard:
-    word: str
-    schedule_status: str
-    days_until_due: int | None
-    interval_days: int | None
-    cards: list[dict[str, object]] = field(default_factory=list)
+    card_metadata: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -136,18 +137,19 @@ class AnkiImportService:
         learner_handle = learner_handle or self.settings.default_learner_handle
 
         cards = self._fetch_cards(deck)
-        card_specs, skipped, duplicate_count = self._build_card_specs(
+        note_specs, skipped, duplicate_count = self._build_note_specs(
             cards=cards,
             deck=deck,
             word_field=word_field,
         )
+        imported_cards = _card_specs(note_specs)
 
         learner = await self.learners.get_or_create_default(learner_handle)
         try:
             await self.learners.replace_cards_for_language(
                 learner=learner,
                 language=language,
-                card_specs=card_specs,
+                note_specs=note_specs,
             )
             await self.session.commit()
         except Exception:
@@ -160,10 +162,12 @@ class AnkiImportService:
             deck=deck,
             language=language,
             found_card_count=len(cards),
-            imported_card_count=len(card_specs),
-            scheduled_count=sum(1 for card in card_specs if card.schedule_status == SCHEDULED),
-            unscheduled_count=sum(1 for card in card_specs if card.schedule_status == UNSCHEDULED),
-            suspended_count=sum(1 for card in card_specs if card.schedule_status == SUSPENDED),
+            imported_card_count=len(imported_cards),
+            scheduled_count=sum(1 for card in imported_cards if card.schedule_status == SCHEDULED),
+            unscheduled_count=sum(
+                1 for card in imported_cards if card.schedule_status == UNSCHEDULED
+            ),
+            suspended_count=sum(1 for card in imported_cards if card.schedule_status == SUSPENDED),
             skipped_missing_field_count=sum(
                 1 for card in skipped if card.reason == "missing_field"
             ),
@@ -203,15 +207,17 @@ class AnkiImportService:
             for card_id in card_ids
         ]
 
-    def _build_card_specs(
+    def _build_note_specs(
         self,
         *,
         cards: list[AnkiCard],
         deck: str,
         word_field: str,
-    ) -> tuple[list[LearnerCardSpec], list[SkippedAnkiCard], int]:
+    ) -> tuple[list[LearnerNoteSpec], list[SkippedAnkiCard], int]:
         imported: list[ImportedAnkiCard] = []
         skipped: list[SkippedAnkiCard] = []
+        seen_card_keys: set[tuple[str, str]] = set()
+        duplicate_count = 0
         for card in cards:
             field_result = _extract_word(card, word_field)
             if isinstance(field_result, SkippedAnkiCard):
@@ -224,20 +230,43 @@ class AnkiImportService:
                 continue
 
             status, days_until_due, interval_days = _schedule_for_card(card)
+            note_key = anki_note_key(card.note_id)
+            card_type = anki_card_type(
+                template_name=card.template_name,
+                ord_value=card.ord,
+                card_id=card.card_id,
+            )
+            card_key = (note_key, card_type)
+            if card_key in seen_card_keys:
+                duplicate_count += 1
+                continue
+            seen_card_keys.add(card_key)
+
             imported.append(
                 ImportedAnkiCard(
                     word=word,
-                    schedule_status=status,
-                    days_until_due=days_until_due,
-                    interval_days=interval_days,
-                    metadata={
-                        "card_id": card.card_id,
-                        "note_id": card.note_id,
+                    note_key=note_key,
+                    card_type=card_type,
+                    note_metadata={
+                        "source": "anki",
                         "deck": deck,
-                        "deck_name": card.deck_name,
+                        "note_id": card.note_id,
                         "model_name": card.model_name,
                         "word_field": word_field,
                         "original_field_value": original_value,
+                        "fields": _clean_fields(card.fields),
+                    },
+                    schedule_status=status,
+                    days_until_due=days_until_due,
+                    interval_days=interval_days,
+                    card_metadata={
+                        "source": "anki",
+                        "card_id": card.card_id,
+                        "note_id": card.note_id,
+                        "deck_name": card.deck_name,
+                        "card_type": card_type,
+                        "template_name": card.template_name,
+                        "ord": card.ord,
                         "queue": card.queue,
                         "type": card.card_type,
                         "reps": card.reps,
@@ -251,26 +280,34 @@ class AnkiImportService:
                 )
             )
 
-        aggregated = _aggregate_cards(imported)
-        card_specs = [
-            LearnerCardSpec(
-                word=card.word,
-                schedule_status=card.schedule_status,
-                days_until_due=card.days_until_due,
-                interval_days=card.interval_days,
-                scheduling_algorithm="anki",
-                metadata={
-                    "source": "anki",
-                    "deck": deck,
-                    "word_field": word_field,
-                    "card_ids": [detail["card_id"] for detail in card.cards],
-                    "note_ids": sorted({detail["note_id"] for detail in card.cards}),
-                    "cards": card.cards,
-                },
+        note_specs_by_key: dict[str, tuple[str, dict[str, object], list[LearnerCardSpec]]] = {}
+        for card in imported:
+            _word, _metadata, card_specs = note_specs_by_key.setdefault(
+                card.note_key,
+                (card.word, card.note_metadata, []),
             )
-            for card in aggregated
+            card_specs.append(
+                LearnerCardSpec(
+                    word=card.word,
+                    card_type=card.card_type,
+                    schedule_status=card.schedule_status,
+                    days_until_due=card.days_until_due,
+                    interval_days=card.interval_days,
+                    scheduling_algorithm="anki",
+                    metadata=card.card_metadata,
+                )
+            )
+
+        note_specs = [
+            LearnerNoteSpec(
+                word=word,
+                note_key=note_key,
+                metadata=metadata,
+                cards=tuple(card_specs),
+            )
+            for note_key, (word, metadata, card_specs) in note_specs_by_key.items()
         ]
-        return card_specs, skipped, len(imported) - len(card_specs)
+        return note_specs, skipped, duplicate_count
 
     def _require_non_empty(self, value: str, name: str) -> str:
         value = value.strip()
@@ -316,38 +353,6 @@ def _schedule_for_card(card: AnkiCard) -> tuple[str, int | None, int | None]:
     return SCHEDULED, days_until_due, interval_days
 
 
-def _aggregate_cards(cards: list[ImportedAnkiCard]) -> list[AggregatedAnkiCard]:
-    aggregated: dict[str, AggregatedAnkiCard] = {}
-    for card in cards:
-        current = aggregated.get(card.word)
-        detail = dict(card.metadata)
-        if current is None:
-            aggregated[card.word] = AggregatedAnkiCard(
-                word=card.word,
-                schedule_status=card.schedule_status,
-                days_until_due=card.days_until_due,
-                interval_days=card.interval_days,
-                cards=[detail],
-            )
-            continue
-
-        current.cards.append(detail)
-        if _schedule_priority(card) < _schedule_priority(current):
-            current.schedule_status = card.schedule_status
-            current.days_until_due = card.days_until_due
-            current.interval_days = card.interval_days
-
-    return list(aggregated.values())
-
-
-def _schedule_priority(card: ImportedAnkiCard | AggregatedAnkiCard) -> tuple[int, int, int]:
-    if card.schedule_status == SCHEDULED:
-        return (0, card.days_until_due or 0, card.interval_days or 1)
-    if card.schedule_status == UNSCHEDULED:
-        return (1, 0, 0)
-    return (2, 0, 0)
-
-
 def _parse_card(raw_card: dict[str, Any], *, suspended: bool, due_now: bool) -> AnkiCard:
     fields = raw_card.get("fields")
     if not isinstance(fields, dict):
@@ -359,6 +364,12 @@ def _parse_card(raw_card: dict[str, Any], *, suspended: bool, due_now: bool) -> 
         deck_name=_required_str(raw_card.get("deckName"), "deckName"),
         model_name=_required_str(raw_card.get("modelName"), "modelName"),
         fields=fields,
+        ord=_optional_int_or_none(raw_card.get("ord")),
+        template_name=_optional_str_or_none(
+            raw_card.get("templateName")
+            or raw_card.get("template")
+            or raw_card.get("cardTemplate")
+        ),
         interval=_optional_int(raw_card.get("interval")),
         due=_optional_int(raw_card.get("due")),
         queue=_optional_int(raw_card.get("queue")),
@@ -402,3 +413,22 @@ def _required_str(value: Any, name: str) -> str:
     if not isinstance(value, str):
         raise AnkiImportError(f"AnkiConnect cardsInfo returned invalid {name}.")
     return value
+
+
+def _optional_str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _clean_fields(fields: dict[str, Any]) -> dict[str, str]:
+    cleaned: dict[str, str] = {}
+    for name, field in fields.items():
+        if not isinstance(name, str) or not isinstance(field, dict):
+            continue
+        raw_value = field.get("value")
+        if isinstance(raw_value, str):
+            cleaned[name] = clean_anki_field(raw_value)
+    return cleaned
+
+
+def _card_specs(note_specs: list[LearnerNoteSpec]) -> list[LearnerCardSpec]:
+    return [card for note in note_specs for card in note.cards]

@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from moku_backend.config import Settings
 from moku_backend.persistence.models import Learner
-from moku_backend.persistence.repositories.learner_repository import LearnerCardSpec
+from moku_backend.persistence.repositories.learner_repository import LearnerNoteSpec
 from moku_backend.services.anki_package_import_service import (
     AnkiPackageImportError,
     AnkiPackageImportService,
@@ -18,6 +18,7 @@ from moku_backend.services.anki_package_reader import (
     AnkiPackageDeck,
     AnkiPackageNote,
     AnkiPackageReviewLog,
+    AnkiPackageTemplate,
 )
 
 
@@ -45,7 +46,7 @@ class FakeLearners:
     def __init__(self) -> None:
         self.learner = Learner(id=12, public_id=uuid4(), handle="default")
         self.language: str | None = None
-        self.card_specs: list[LearnerCardSpec] = []
+        self.note_specs: list[LearnerNoteSpec] = []
 
     async def get_or_create_default(self, handle: str) -> Learner:
         self.learner.handle = handle
@@ -56,10 +57,10 @@ class FakeLearners:
         *,
         learner: Learner,
         language: str,
-        card_specs,
+        note_specs,
     ) -> None:
         self.language = language
-        self.card_specs = list(card_specs)
+        self.note_specs = list(note_specs)
 
 
 async def test_package_import_persists_fsrs_state_and_revlogs(tmp_path: Path) -> None:
@@ -82,24 +83,36 @@ async def test_package_import_persists_fsrs_state_and_revlogs(tmp_path: Path) ->
         language="zh-CN",
     )
 
-    assert result.found_card_count == 2
-    assert result.imported_card_count == 1
-    assert result.duplicate_card_count == 1
+    assert result.found_card_count == 3
+    assert result.imported_card_count == 3
+    assert result.duplicate_card_count == 0
     assert result.imported_review_log_count == 2
     assert result.fsrs_card_count == 1
     assert session.commit_count == 1
     assert learners.language == "zh-CN"
 
-    spec = learners.card_specs[0]
-    assert spec.word == "casa"
-    assert spec.scheduling_algorithm == "anki"
-    assert spec.fsrs_card is not None
-    assert spec.fsrs_card["stability"] == 4.2
-    assert spec.fsrs_card["difficulty"] == 5.1
-    assert spec.review_logs[0].rating == "good"
-    assert spec.review_logs[1].rating == "again"
-    assert spec.metadata["source"] == "anki_package"
-    assert spec.metadata["card_ids"] == [200, 201]
+    specs_by_key = {spec.note_key: spec for spec in learners.note_specs}
+    assert set(specs_by_key) == {"anki:100", "anki:101"}
+
+    first_note = specs_by_key["anki:100"]
+    assert first_note.word == "casa"
+    assert first_note.metadata["source"] == "anki_package"
+    assert first_note.metadata["note_id"] == 100
+    assert [card.card_type for card in first_note.cards] == ["reading", "listening"]
+    assert first_note.cards[0].scheduling_algorithm == "anki"
+    assert first_note.cards[0].fsrs_card is not None
+    assert first_note.cards[0].fsrs_card["stability"] == 4.2
+    assert first_note.cards[0].fsrs_card["difficulty"] == 5.1
+    assert first_note.cards[0].review_logs[0].rating == "good"
+    assert first_note.cards[0].metadata["card_id"] == 200
+    assert first_note.cards[1].review_logs == ()
+    assert first_note.cards[1].metadata["card_id"] == 202
+
+    second_note = specs_by_key["anki:101"]
+    assert second_note.word == "casa"
+    assert second_note.cards[0].card_type == "reading"
+    assert second_note.cards[0].review_logs[0].rating == "again"
+    assert second_note.cards[0].metadata["card_id"] == 201
 
 
 async def test_package_import_requires_scheduling_data(tmp_path: Path) -> None:
@@ -161,6 +174,20 @@ def _package(path: Path, *, include_scheduling: bool = True) -> AnkiPackage:
             AnkiPackageDeck(id=2, name="Deck::Child", raw_name="Deck\x1fChild", card_count=2),
         ],
         fields=[],
+        templates=[
+            AnkiPackageTemplate(
+                notetype_id=10,
+                notetype_name="Basic",
+                ord=0,
+                name="Reading",
+            ),
+            AnkiPackageTemplate(
+                notetype_id=10,
+                notetype_name="Basic",
+                ord=1,
+                name="Listening",
+            ),
+        ],
         notes=[
             AnkiPackageNote(
                 id=100,
@@ -219,6 +246,27 @@ def _package(path: Path, *, include_scheduling: bool = True) -> AnkiPackage:
                 factor=1000,
                 reps=4,
                 lapses=1,
+                left=0,
+                odue=0,
+                odid=0,
+                flags=0,
+                raw_data="{}",
+                card_data={},
+            ),
+            AnkiPackageCard(
+                id=202,
+                note_id=100,
+                deck_id=2,
+                deck_name="Deck::Child",
+                ord=1,
+                mod=1,
+                card_type=2,
+                queue=2,
+                due=13,
+                interval=9,
+                factor=1000,
+                reps=2,
+                lapses=0,
                 left=0,
                 odue=0,
                 odid=0,

@@ -26,15 +26,20 @@ class Learner(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    cards: Mapped[list[LearnerCard]] = relationship(
+    notes: Mapped[list[LearnerNote]] = relationship(
         back_populates="learner", cascade="all, delete-orphan"
     )
 
 
-class LearnerCard(Base):
-    __tablename__ = "learner_cards"
+class LearnerNote(Base):
+    __tablename__ = "learner_notes"
     __table_args__ = (
-        UniqueConstraint("learner_id", "word", "language", name="uq_learner_cards_word_language"),
+        UniqueConstraint(
+            "learner_id",
+            "language",
+            "note_key",
+            name="uq_learner_notes_learner_language_key",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -46,6 +51,36 @@ class LearnerCard(Base):
     )
     word: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     language: Mapped[str] = mapped_column(String(32), nullable=False)
+    note_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    learner: Mapped[Learner] = relationship(back_populates="notes")
+    cards: Mapped[list[LearnerCard]] = relationship(
+        back_populates="note", cascade="all, delete-orphan"
+    )
+
+
+class LearnerCard(Base):
+    __tablename__ = "learner_cards"
+    __table_args__ = (
+        UniqueConstraint(
+            "learner_note_id",
+            "card_type",
+            name="uq_learner_cards_note_card_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[uuid.UUID] = mapped_column(
+        SqlUuid(as_uuid=True), default=uuid.uuid4, unique=True, index=True
+    )
+    learner_note_id: Mapped[int] = mapped_column(
+        ForeignKey("learner_notes.id", ondelete="CASCADE"), index=True
+    )
+    card_type: Mapped[str] = mapped_column(String(120), nullable=False)
     due_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
@@ -58,7 +93,7 @@ class LearnerCard(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    learner: Mapped[Learner] = relationship(back_populates="cards")
+    note: Mapped[LearnerNote] = relationship(back_populates="cards")
     review_logs: Mapped[list[ReviewLog]] = relationship(
         back_populates="learner_card", cascade="all, delete-orphan"
     )

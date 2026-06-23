@@ -10,7 +10,7 @@ from moku_backend.persistence.models.corpus import (
     ImportRun,
     Sentence,
 )
-from moku_backend.persistence.models.srs import Learner, LearnerCard, ReviewLog
+from moku_backend.persistence.models.srs import Learner, LearnerCard, LearnerNote, ReviewLog
 
 __all__ = [
     "BM25CorpusDocument",
@@ -22,6 +22,7 @@ __all__ = [
     "ImportRun",
     "Learner",
     "LearnerCard",
+    "LearnerNote",
     "ReviewLog",
     "Sentence",
 ]

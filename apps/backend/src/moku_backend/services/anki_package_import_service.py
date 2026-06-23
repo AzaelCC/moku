@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from moku_backend.config import Settings
 from moku_backend.persistence.repositories.learner_repository import (
     LearnerCardSpec,
+    LearnerNoteSpec,
     LearnerRepository,
     LearnerReviewLogSpec,
 )
@@ -29,6 +30,7 @@ from moku_backend.services.anki_package_reader import (
     AnkiPackageReader,
     AnkiPackageReviewLog,
 )
+from moku_backend.services.learner_card_identity import anki_card_type, anki_note_key
 
 ANKI_PACKAGE_SOURCE = "anki_package"
 ANKI_ALGORITHM = "anki"
@@ -41,23 +43,15 @@ class AnkiPackageImportError(RuntimeError):
 @dataclass
 class ImportedAnkiPackageCard:
     word: str
+    note_key: str
+    card_type: str
+    note_metadata: dict[str, object]
     schedule_status: str
     due_at: datetime | None
     interval_days: int | None
     fsrs_card: dict[str, object] | None
     review_logs: list[LearnerReviewLogSpec]
-    metadata: dict[str, object]
-
-
-@dataclass
-class AggregatedAnkiPackageCard:
-    word: str
-    schedule_status: str
-    due_at: datetime | None
-    interval_days: int | None
-    fsrs_card: dict[str, object] | None
-    review_logs: list[LearnerReviewLogSpec] = field(default_factory=list)
-    cards: list[dict[str, object]] = field(default_factory=list)
+    card_metadata: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -98,7 +92,6 @@ class AnkiPackageImportService:
     ) -> None:
         self.session = session
         self.settings = settings
-        print(settings.database_url)
         self.reader = reader or AnkiPackageReader()
         self.learners = LearnerRepository(session)
 
@@ -129,19 +122,20 @@ class AnkiPackageImportService:
                 "Export with scheduling enabled."
             )
 
-        card_specs, skipped, duplicate_count = self._build_card_specs(
+        note_specs, skipped, duplicate_count = self._build_note_specs(
             package=package,
             cards=cards,
             deck=deck,
             word_field=word_field,
         )
+        imported_cards = _card_specs(note_specs)
 
         learner = await self.learners.get_or_create_default(learner_handle)
         try:
             await self.learners.replace_cards_for_language(
                 learner=learner,
                 language=language,
-                card_specs=card_specs,
+                note_specs=note_specs,
             )
             await self.session.commit()
         except Exception:
@@ -155,12 +149,14 @@ class AnkiPackageImportService:
             deck=deck,
             language=language,
             found_card_count=len(cards),
-            imported_card_count=len(card_specs),
-            imported_review_log_count=sum(len(card.review_logs) for card in card_specs),
-            fsrs_card_count=sum(1 for card in card_specs if card.fsrs_card is not None),
-            scheduled_count=sum(1 for card in card_specs if card.schedule_status == SCHEDULED),
-            unscheduled_count=sum(1 for card in card_specs if card.schedule_status == UNSCHEDULED),
-            suspended_count=sum(1 for card in card_specs if card.schedule_status == SUSPENDED),
+            imported_card_count=len(imported_cards),
+            imported_review_log_count=sum(len(card.review_logs) for card in imported_cards),
+            fsrs_card_count=sum(1 for card in imported_cards if card.fsrs_card is not None),
+            scheduled_count=sum(1 for card in imported_cards if card.schedule_status == SCHEDULED),
+            unscheduled_count=sum(
+                1 for card in imported_cards if card.schedule_status == UNSCHEDULED
+            ),
+            suspended_count=sum(1 for card in imported_cards if card.schedule_status == SUSPENDED),
             skipped_missing_field_count=sum(
                 1 for card in skipped if card.reason == "missing_field"
             ),
@@ -191,17 +187,19 @@ class AnkiPackageImportService:
         has_fsrs_state = any(card.fsrs_stability is not None for card in cards)
         return has_review_logs or has_fsrs_state
 
-    def _build_card_specs(
+    def _build_note_specs(
         self,
         *,
         package: AnkiPackage,
         cards: list[AnkiPackageCard],
         deck: str,
         word_field: str,
-    ) -> tuple[list[LearnerCardSpec], list[SkippedAnkiCard], int]:
+    ) -> tuple[list[LearnerNoteSpec], list[SkippedAnkiCard], int]:
         imported: list[ImportedAnkiPackageCard] = []
         skipped: list[SkippedAnkiCard] = []
         collection_date = package.created_at.date()
+        seen_card_keys: set[tuple[str, str]] = set()
+        duplicate_count = 0
 
         for card in cards:
             note = package.notes_by_id.get(card.note_id)
@@ -227,22 +225,52 @@ class AnkiPackageImportService:
                 _review_log_spec(review_log)
                 for review_log in package.review_logs_by_card_id.get(card.id, ())
             ]
+            template = package.templates_by_notetype_ord.get((note.notetype_id, card.ord))
+            template_name = template.name if template is not None else None
+            note_key = anki_note_key(card.note_id)
+            card_type = anki_card_type(
+                template_name=template_name,
+                ord_value=card.ord,
+                card_id=card.id,
+            )
+            card_key = (note_key, card_type)
+            if card_key in seen_card_keys:
+                duplicate_count += 1
+                continue
+            seen_card_keys.add(card_key)
+
             imported.append(
                 ImportedAnkiPackageCard(
                     word=word,
+                    note_key=note_key,
+                    card_type=card_type,
+                    note_metadata={
+                        "source": ANKI_PACKAGE_SOURCE,
+                        "package_path": str(package.path),
+                        "collection_entry": package.collection_entry,
+                        "note_id": card.note_id,
+                        "note_guid": note.guid,
+                        "notetype_id": note.notetype_id,
+                        "notetype_name": note.notetype_name,
+                        "word_field": word_field,
+                        "original_field_value": original_value,
+                        "fields": _clean_note_fields(note.fields),
+                        "tags": note.tags,
+                        "mod": note.mod,
+                    },
                     schedule_status=status,
                     due_at=due_at,
                     interval_days=interval_days,
                     fsrs_card=fsrs_card,
                     review_logs=review_logs,
-                    metadata={
+                    card_metadata={
+                        "source": ANKI_PACKAGE_SOURCE,
                         "card_id": card.id,
                         "note_id": card.note_id,
-                        "deck": deck,
                         "deck_name": card.deck_name,
-                        "notetype_name": note.notetype_name,
-                        "word_field": word_field,
-                        "original_field_value": original_value,
+                        "card_type": card_type,
+                        "template_name": template_name,
+                        "ord": card.ord,
                         "queue": card.queue,
                         "type": card.card_type,
                         "reps": card.reps,
@@ -258,30 +286,36 @@ class AnkiPackageImportService:
                 )
             )
 
-        aggregated = _aggregate_cards(imported)
-        card_specs = [
-            LearnerCardSpec(
-                word=card.word,
-                schedule_status=card.schedule_status,
-                due_at=card.due_at,
-                interval_days=card.interval_days,
-                scheduling_algorithm=ANKI_ALGORITHM,
-                fsrs_card=card.fsrs_card,
-                review_logs=tuple(card.review_logs),
-                metadata={
-                    "source": ANKI_PACKAGE_SOURCE,
-                    "package_path": str(package.path),
-                    "collection_entry": package.collection_entry,
-                    "deck": deck,
-                    "word_field": word_field,
-                    "card_ids": [detail["card_id"] for detail in card.cards],
-                    "note_ids": sorted({detail["note_id"] for detail in card.cards}),
-                    "cards": card.cards,
-                },
+        note_specs_by_key: dict[str, tuple[str, dict[str, object], list[LearnerCardSpec]]] = {}
+        for card in imported:
+            _word, _metadata, card_specs = note_specs_by_key.setdefault(
+                card.note_key,
+                (card.word, card.note_metadata, []),
             )
-            for card in aggregated
+            card_specs.append(
+                LearnerCardSpec(
+                    word=card.word,
+                    card_type=card.card_type,
+                    schedule_status=card.schedule_status,
+                    due_at=card.due_at,
+                    interval_days=card.interval_days,
+                    scheduling_algorithm=ANKI_ALGORITHM,
+                    fsrs_card=card.fsrs_card,
+                    review_logs=tuple(card.review_logs),
+                    metadata=card.card_metadata,
+                )
+            )
+
+        note_specs = [
+            LearnerNoteSpec(
+                word=word,
+                note_key=note_key,
+                metadata=metadata,
+                cards=tuple(card_specs),
+            )
+            for note_key, (word, metadata, card_specs) in note_specs_by_key.items()
         ]
-        return card_specs, skipped, len(imported) - len(card_specs)
+        return note_specs, skipped, duplicate_count
 
     def _require_non_empty(self, value: str, name: str) -> str:
         value = value.strip()
@@ -371,45 +405,9 @@ def _rating_for_ease(ease: int) -> str:
     return {1: "again", 2: "hard", 3: "good", 4: "easy"}.get(ease, "unknown")
 
 
-def _aggregate_cards(cards: list[ImportedAnkiPackageCard]) -> list[AggregatedAnkiPackageCard]:
-    aggregated: dict[str, AggregatedAnkiPackageCard] = {}
-    for card in cards:
-        detail = dict(card.metadata)
-        current = aggregated.get(card.word)
-        if current is None:
-            aggregated[card.word] = AggregatedAnkiPackageCard(
-                word=card.word,
-                schedule_status=card.schedule_status,
-                due_at=card.due_at,
-                interval_days=card.interval_days,
-                fsrs_card=card.fsrs_card,
-                review_logs=list(card.review_logs),
-                cards=[detail],
-            )
-            continue
-
-        current.cards.append(detail)
-        current.review_logs.extend(card.review_logs)
-        if _schedule_priority(card) < _schedule_priority(current):
-            current.schedule_status = card.schedule_status
-            current.due_at = card.due_at
-            current.interval_days = card.interval_days
-            current.fsrs_card = card.fsrs_card
-        elif current.fsrs_card is None and card.fsrs_card is not None:
-            current.fsrs_card = card.fsrs_card
-
-    return list(aggregated.values())
+def _clean_note_fields(fields: dict[str, str]) -> dict[str, str]:
+    return {name: clean_anki_field(value) for name, value in fields.items()}
 
 
-def _schedule_priority(
-    card: ImportedAnkiPackageCard | AggregatedAnkiPackageCard,
-) -> tuple[int, datetime, int]:
-    if card.schedule_status == SCHEDULED:
-        return (
-            0,
-            card.due_at or datetime.fromtimestamp(0, UTC),
-            card.interval_days or 1,
-        )
-    if card.schedule_status == UNSCHEDULED:
-        return (1, datetime.fromtimestamp(0, UTC), 0)
-    return (2, datetime.fromtimestamp(0, UTC), 0)
+def _card_specs(note_specs: list[LearnerNoteSpec]) -> list[LearnerCardSpec]:
+    return [card for note in note_specs for card in note.cards]

@@ -15,13 +15,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from moku_backend.config import Settings
-from moku_backend.persistence.models import Learner, LearnerCard, ReviewLog
+from moku_backend.persistence.models import Learner, LearnerCard, LearnerNote, ReviewLog
 from moku_backend.persistence.repositories.learner_repository import LearnerRepository
+from moku_backend.services.learner_card_identity import (
+    manual_note_key,
+    normalize_card_type,
+    normalize_word,
+)
 
 FSRS_ALGORITHM = "fsrs"
 LEGACY_ALGORITHM = "legacy"
 SCHEDULED = "scheduled"
-CARD_WORD_MAX_LENGTH = 255
 
 RATINGS: dict[str, FsrsRating] = {
     "again": FsrsRating.Again,
@@ -65,27 +69,46 @@ class LearnerCardService:
         self,
         *,
         word: str,
+        card_type: str,
         language: str | None = None,
         learner_public_id: UUID | None = None,
     ) -> LearnerCard:
         learner = await self._resolve_learner(learner_public_id)
         normalized_word = _normalize_word(word)
         normalized_language = normalize_language(language or self.settings.default_language)
-        existing = await self.learners.get_card_by_word_language(
+        normalized_card_type = _normalize_card_type(card_type)
+        note_key = manual_note_key(normalized_word)
+        existing = await self.learners.get_card_by_note_key_card_type(
             learner=learner,
-            word=normalized_word,
             language=normalized_language,
+            note_key=note_key,
+            card_type=normalized_card_type,
         )
         if existing is not None:
             raise LearnerCardConflictError(
-                f"Learner already has a card for {normalized_word!r} in {normalized_language}."
+                "Learner already has a "
+                f"{normalized_card_type!r} card for {normalized_word!r} in {normalized_language}."
             )
 
         now = datetime.now(UTC)
-        card = LearnerCard(
+        note = await self.learners.get_note_by_key(
             learner=learner,
-            word=normalized_word,
             language=normalized_language,
+            note_key=note_key,
+        )
+        if note is None:
+            note = LearnerNote(
+                learner=learner,
+                word=normalized_word,
+                language=normalized_language,
+                note_key=note_key,
+                source_metadata={"source": "moku-manual"},
+            )
+            self.session.add(note)
+
+        card = LearnerCard(
+            note=note,
+            card_type=normalized_card_type,
             due_at=now,
             interval_days=1,
             schedule_status=SCHEDULED,
@@ -103,7 +126,8 @@ class LearnerCardService:
         except IntegrityError as exc:
             await self.session.rollback()
             raise LearnerCardConflictError(
-                f"Learner already has a card for {normalized_word!r} in {normalized_language}."
+                "Learner already has a "
+                f"{normalized_card_type!r} card for {normalized_word!r} in {normalized_language}."
             ) from exc
         except Exception:
             await self.session.rollback()
@@ -207,14 +231,17 @@ def parse_rating(value: str) -> FsrsRating:
 
 
 def _normalize_word(value: str) -> str:
-    word = value.strip().casefold()
-    if not word:
-        raise LearnerCardValidationError("Learner card word must not be empty.")
-    if len(word) > CARD_WORD_MAX_LENGTH:
-        raise LearnerCardValidationError(
-            f"Learner card word must be {CARD_WORD_MAX_LENGTH} characters or fewer."
-        )
-    return word
+    try:
+        return normalize_word(value)
+    except ValueError as exc:
+        raise LearnerCardValidationError(str(exc)) from exc
+
+
+def _normalize_card_type(value: str) -> str:
+    try:
+        return normalize_card_type(value)
+    except ValueError as exc:
+        raise LearnerCardValidationError(str(exc)) from exc
 
 
 def _normalize_optional_filter(value: str | None) -> str | None:

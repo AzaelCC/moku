@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from moku_backend.api.deps import get_session
 from moku_backend.api.v1 import learner_cards as learner_cards_api
 from moku_backend.config import Settings
-from moku_backend.persistence.models import Learner, LearnerCard, ReviewLog
+from moku_backend.persistence.models import Learner, LearnerCard, LearnerNote, ReviewLog
 from moku_backend.services.learner_card_service import (
     LearnerCardConflictError,
     LearnerCardNotFoundError,
@@ -33,13 +33,20 @@ def make_app(monkeypatch, fake_service_type: type) -> FastAPI:
 
 def make_card() -> LearnerCard:
     learner = Learner(id=12, public_id=uuid4(), handle="default")
+    note = LearnerNote(
+        learner=learner,
+        public_id=uuid4(),
+        word="casa",
+        language="en",
+        note_key="manual:casa",
+        source_metadata={},
+    )
     reviewed_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     return LearnerCard(
         id=55,
         public_id=uuid4(),
-        learner=learner,
-        word="casa",
-        language="en",
+        note=note,
+        card_type="reading",
         due_at=reviewed_at,
         interval_days=1,
         schedule_status="scheduled",
@@ -73,15 +80,33 @@ def test_create_learner_card_api_returns_fsrs_card(monkeypatch) -> None:
 
     response = TestClient(app).post(
         "/v1/learner-cards",
-        json={"word": "Casa", "language": "en"},
+        json={"word": "Casa", "card_type": "reading", "language": "en"},
     )
 
     assert response.status_code == 201
     assert seen["word"] == "Casa"
+    assert seen["card_type"] == "reading"
     payload = response.json()
     assert payload["public_id"] == str(card.public_id)
+    assert payload["note_id"] == str(card.note.public_id)
+    assert payload["card_type"] == "reading"
     assert payload["scheduling_algorithm"] == "fsrs"
     assert payload["fsrs_state"]["state"] == "learning"
+
+
+def test_create_learner_card_api_requires_card_type(monkeypatch) -> None:
+    class FakeLearnerCardService:
+        def __init__(self, session: object, settings: Settings) -> None:
+            pass
+
+    app = make_app(monkeypatch, FakeLearnerCardService)
+
+    response = TestClient(app).post(
+        "/v1/learner-cards",
+        json={"word": "Casa", "language": "en"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_list_learner_cards_api_passes_filters(monkeypatch) -> None:
