@@ -10,6 +10,11 @@ from moku_backend.persistence.models.corpus import (
     ImportRun,
     Sentence,
 )
+from moku_backend.persistence.models.dictionary import (
+    DictionaryEntry,
+    DictionaryEntryTerm,
+    DictionarySource,
+)
 from moku_backend.persistence.models.srs import Learner, LearnerCard, LearnerNote, ReviewLog
 
 __all__ = [
@@ -19,6 +24,9 @@ __all__ = [
     "BM25IndexPosting",
     "BM25IndexTerm",
     "Corpus",
+    "DictionaryEntry",
+    "DictionaryEntryTerm",
+    "DictionarySource",
     "ImportRun",
     "Learner",
     "LearnerCard",

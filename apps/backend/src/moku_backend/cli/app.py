@@ -17,6 +17,10 @@ from moku_backend.services.anki_package_import_service import (
     AnkiPackageImportService,
 )
 from moku_backend.services.corpus_import_service import CorpusImportService
+from moku_backend.services.dictionary_import_service import (
+    DictionaryImportError,
+    DictionaryImportService,
+)
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -169,6 +173,42 @@ def import_anki_package(
         typer.echo(f"Skipped sample cards: {samples}")
 
 
+@app.command("import-dictionary")
+def import_dictionary(
+    source: Annotated[
+        str,
+        typer.Option(help="Dictionary source: cc-cedict."),
+    ] = "cc-cedict",
+    language: Annotated[str, typer.Option(help="Dictionary source language tag.")] = "zh",
+    definition_language: Annotated[
+        str,
+        typer.Option(help="Definition language tag."),
+    ] = "en",
+    path: Annotated[
+        str,
+        typer.Option(help="Path to a local CC-CEDICT .txt, .gz, or .zip file."),
+    ] = ...,
+) -> None:
+    try:
+        result = asyncio.run(
+            _import_dictionary(
+                source=source,
+                language=language,
+                definition_language=definition_language,
+                path=path,
+            )
+        )
+    except DictionaryImportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    typer.echo(
+        "Imported "
+        f"{result.entry_count} dictionary entries from {result.source_key} "
+        f"for {result.language}->{result.definition_language} "
+        f"(source={result.source_public_id})."
+    )
+
+
 async def _import_corpus(
     *,
     source: str,
@@ -243,6 +283,29 @@ async def _import_anki_package(
                 word_field=word_field,
                 language=language,
                 learner_handle=learner_handle,
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _import_dictionary(
+    *,
+    source: str,
+    language: str,
+    definition_language: str,
+    path: str,
+):
+    settings = Settings()
+    engine = create_engine(settings)
+    sessionmaker = create_sessionmaker(engine)
+    try:
+        async with sessionmaker() as session:
+            service = DictionaryImportService(session, settings)
+            return await service.import_dictionary(
+                source=source,
+                language=language,
+                definition_language=definition_language,
+                path=path,
             )
     finally:
         await engine.dispose()
