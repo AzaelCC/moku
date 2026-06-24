@@ -44,6 +44,12 @@ different host ports. For host-run backend commands, `MOKU_DATABASE_URL` can use
 `.env.docker` into backend containers so they use the internal Postgres service
 address instead.
 
+Docker Compose stores generated text-to-speech MP3 files in the named
+`tts-audio` volume mounted at `/app/data/audio/tts`. Set
+`MOKU_AZURE_SPEECH_KEY` and optionally `MOKU_AZURE_SPEECH_REGION` in
+`.env.docker` when using Azure Speech. Remove the `tts-audio` volume if you need
+to clear the local audio cache.
+
 Run the API:
 
 ```powershell

@@ -8,8 +8,11 @@ services:
       - .env.docker
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
+      MOKU_TTS_AUDIO_DIR: /app/data/audio/tts
     ports:
       - "${MOKU_BACKEND_PORT:-8000}:8000"
+    volumes:
+      - tts-audio:/app/data/audio/tts
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -45,3 +48,4 @@ services:
 
 volumes:
   postgres-data:
+  tts-audio:

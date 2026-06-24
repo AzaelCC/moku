@@ -36,8 +36,8 @@ RUN uv sync --frozen --no-dev --package moku-backend --all-extras --no-editable
 
 RUN groupadd --system moku \
     && useradd --system --gid moku --home /app moku \
-    && mkdir -p /app/.cache/huggingface/datasets \
-    && chown -R moku:moku /app/.cache
+    && mkdir -p /app/.cache/huggingface/datasets /app/data/audio/tts \
+    && chown -R moku:moku /app/.cache /app/data
 USER moku
 
 EXPOSE 8000
